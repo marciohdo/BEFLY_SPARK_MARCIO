@@ -64,10 +64,14 @@ source env.sh
 python scripts/download_dataset.py
 ```
 
-O script imprime o caminho local onde o `kagglehub` salvou os arquivos. A partir
-dali, o `hotel_bookings.csv` deve ser copiado para `data/raw/`, junto com as
-tabelas de referência `country_metadata.csv` e `hotel_metadata.csv` (fornecidas
-em anexo ao teste).
+O script grava o `hotel_bookings.csv` direto em `data/raw/` e é **idempotente**:
+o `kagglehub` reaproveita o cache local, e o arquivo só é copiado se ainda não
+existir em `data/raw/` ou se o conteúdo for diferente. Pode ser reexecutado sem
+efeitos colaterais. Para forçar um novo download e sobrescrever, use
+`python scripts/download_dataset.py --force`.
+
+As tabelas de referência `country_metadata.csv` e `hotel_metadata.csv` não vêm
+do Kaggle. Elas foram fornecidas em anexo ao teste e já estão em `data/raw/`.
 
 ### Caminhos dos arquivos
 
@@ -124,6 +128,19 @@ e roda confortavelmente em PySpark local, então não há ganho em reduzi-lo.
 | countries | 252 |
 | hotels | 2 |
 
+### Checklist – requisitos do enunciado (seção 4.1)
+
+| Requisito | Status | Onde / como |
+|---|---|---|
+| Ler os 3 CSVs em PySpark | ✅ | `read_csv()` para bookings, countries e hotels |
+| `header = True` | ✅ | `.option("header", True)` |
+| Separador `,` | ✅ | `.option("sep", ",")` |
+| `inferSchema` **ou** schema explícito (**bônus**) | ✅ bônus | `BOOKINGS_SCHEMA`, `COUNTRIES_SCHEMA` e `HOTELS_SCHEMA` com `StructType` |
+| Tratar `"NULL"` como nulo | ✅ | `.option("nullValue", "NULL")` (`agent`, `company`, `country`) |
+| Recorte de volume (opcional) | ✅ | Dataset completo mantido (ver [Recorte do dataset](#recorte-do-dataset)) |
+| Parquet com Snappy em `data/bronze/` | ✅ | `.option("compression", "snappy")` em `bookings/`, `countries/` e `hotels/` |
+| Particionar `bookings` por `arrival_date_year` (**bônus**) | ✅ bônus | `partitionBy("arrival_date_year")`, que gera as pastas 2015, 2016 e 2017 |
+
 ## Silver – principais transformações
 
 1. **Tipos:** as colunas inteiras listadas no enunciado viram `int`, `adr` vira
@@ -163,6 +180,27 @@ e roda confortavelmente em PySpark local, então não há ganho em reduzi-lo.
    contagem antes e depois do join** e falha se houver duplicação.
 7. Gravação em Parquet particionado por `arrival_date_year` / `arrival_date_month_num`.
 
+### Checklist – requisitos do enunciado (seção 4.2)
+
+| Requisito | Status | Onde / como |
+|---|---|---|
+| Colunas inteiras → `integer` (lista do enunciado) | ✅ | `cast_types()`, com a lista `INT_COLUMNS` |
+| `adr` → `double` | ✅ | `cast_types()` |
+| `reservation_status_date` → `date` | ✅ | `to_date(..., "yyyy-MM-dd")` em `cast_types()` |
+| Criar `arrival_date` com `to_date`, `concat_ws` e `lpad` | ✅ | `add_arrival_date()`; o mês é mapeado para 1–12 via `create_map` |
+| `children` nulo → `0` | ✅ | `handle_nulls()` (4 registros, incluindo os `"NA"` da fonte) |
+| `country` nulo → `"UNK"` | ✅ | `handle_nulls()` (488 registros) |
+| Filtrar reservas sem hóspedes | ✅ | `filter_invalid()`: 180 removidas |
+| Filtrar `adr < 0` | ✅ | `filter_invalid()`: 1 removida |
+| Documentar quantos registros cada filtro removeu | ✅ | Log de cada filtro e a tabela acima |
+| Pelo menos 3 colunas derivadas | ✅ | 9 colunas em `add_derived_columns()`, incluindo todas as 6 sugeridas |
+| LEFT JOIN com `country_metadata` (`country_name`, `continent`) | ✅ | `enrich()` |
+| LEFT JOIN com `hotel_metadata` (`hotel_city`, `hotel_star_rating`, `hotel_opened_year`) | ✅ | `enrich()` |
+| Join sem duplicar registros | ✅ | `dropDuplicates` na chave das referências e comparação de contagem antes e depois (a etapa falha se divergir) |
+| Parquet em `data/silver/bookings_enriched/` | ✅ | `main()` |
+| Particionar por `arrival_date_year` + `arrival_date_month_num` (**bônus**) | ✅ bônus | `partitionBy("arrival_date_year", "arrival_date_month_num")` |
+| Usar a API de DataFrames, sem SQL direto | ✅ | Nenhum `spark.sql()` no projeto |
+
 ## Gold – visões analíticas
 
 Em todas as visões, uma reserva é **cancelada** quando `is_canceled = 1`, o que
@@ -184,6 +222,20 @@ Alguns achados da execução:
   com antecedência média de 225 dias.
 - Portugal lidera em receita, mas Reino Unido, França e Alemanha têm ticket
   médio maior e reservam com bem mais antecedência.
+
+### Checklist – requisitos do enunciado (seção 4.3)
+
+| Requisito | Status | Onde / como |
+|---|---|---|
+| Pelo menos uma visão Gold (idealmente 2 ou 3) | ✅ | 5 visões em [`silver_to_gold.py`](scripts/silver_to_gold.py) |
+| Sugestão 1: receita e ocupação por hotel × mês | ✅ | `revenue_by_hotel_month`, com todas as métricas sugeridas |
+| Sugestão 2: cancelamentos por segmento | ✅ | `cancellation_by_segment`, com todas as métricas sugeridas |
+| Sugestão 3: Top 20 países por receita | ✅ | `top_countries_by_revenue`, ordenada por `total_revenue` desc com `limit(20)` |
+| Sugestão 4: estadia média e perfil de hóspedes | ✅ | `guest_profile_by_hotel`, com granularidade `(hotel, customer_type)` |
+| Visão proposta pelo candidato | ✅ extra | `cancellation_by_lead_time`, sobre risco de cancelamento para retenção |
+| DataFrame agregado (`groupBy` + `agg`) | ✅ | Todas as 5 visões |
+| Salvo em `data/gold/` em Parquet ou CSV | ✅ | Parquet com Snappy, um arquivo por visão |
+| Nomes de colunas autoexplicativos | ✅ | `total_revenue`, `cancellation_rate`, `avg_lead_time` etc. |
 
 ## Comentário arquitetural – produção na AWS / Databricks
 
@@ -212,3 +264,21 @@ pessoais de hóspedes, conforme a LGPD) e criptografia via KMS. A Gold seria
 exposta para BI pelo **Athena** ou por um **Databricks SQL Warehouse**, servindo
 Power BI/QuickSight, e as marcas do grupo consumiriam os dados por
 *data sharing* sem cópia (Delta Sharing ou Lake Formation cross-account).
+
+## Checklist – entrega (seção 5)
+
+| Requisito | Status | Onde / como |
+|---|---|---|
+| Scripts PySpark com leitura Bronze, transformações Silver e agregações Gold | ✅ | [`raw_to_bronze.py`](scripts/raw_to_bronze.py), [`bronze_to_silver.py`](scripts/bronze_to_silver.py), [`silver_to_gold.py`](scripts/silver_to_gold.py) |
+| Código organizado e legível | ✅ | Uma função por transformação, config externa e módulo comum em [`utils/`](utils/) |
+| Estrutura de pastas sugerida | ✅ | `scripts/`, `utils/` (com `config.yaml`), `data/{raw,bronze,silver,gold}/`; o notebook opcional não foi incluído |
+| README: visão geral | ✅ | [Visão geral](#visão-geral) |
+| README: versões do Python e do PySpark | ✅ | [Requisitos](#requisitos) |
+| README: instalação de dependências | ✅ | [Instalação](#instalação) e `requirements.txt` |
+| README: como apontar os caminhos dos CSVs | ✅ | [Caminhos dos arquivos](#caminhos-dos-arquivos) |
+| README: comandos para rodar o pipeline | ✅ | [Rodando o pipeline](#rodando-o-pipeline) |
+| README: recorte realizado | ✅ | [Recorte do dataset](#recorte-do-dataset) |
+| README: principais transformações da Silver | ✅ | [Silver – principais transformações](#silver--principais-transformações) |
+| README: visões Gold e pergunta de negócio de cada uma | ✅ | [Gold – visões analíticas](#gold--visões-analíticas) |
+| Comentário arquitetural (AWS/Databricks, 1–2 parágrafos) | ✅ | [Comentário arquitetural](#comentário-arquitetural--produção-na-aws--databricks) |
+| Entrega via repositório Git (preferido) | ✅ | https://github.com/marciohdo/BEFLY_SPARK_MARCIO |
