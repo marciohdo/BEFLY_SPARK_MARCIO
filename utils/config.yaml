@@ -24,3 +24,5 @@ gold:
   cancellation_by_lead_time: data/gold/cancellation_by_lead_time
   top_countries_by_revenue: data/gold/top_countries_by_revenue
   guest_profile_by_hotel: data/gold/guest_profile_by_hotel
+  booking_cancellation_risk: data/gold/booking_cancellation_risk
+  cancellation_risk_summary: data/gold/cancellation_risk_summary

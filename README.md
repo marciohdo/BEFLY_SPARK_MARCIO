@@ -9,7 +9,7 @@ Mini-pipeline em **PySpark (API de DataFrames)** que processa o dataset público
 |---|---|---|---|
 | Bronze | [`scripts/raw_to_bronze.py`](scripts/raw_to_bronze.py) | Lê os 3 CSVs com **schema explícito**, trata `"NULL"` como nulo e grava Parquet/Snappy com colunas de linhagem | `data/bronze/{bookings,countries,hotels}/` (`bookings` particionado por `arrival_date_year`) |
 | Silver | [`scripts/bronze_to_silver.py`](scripts/bronze_to_silver.py) | Tipagem, `arrival_date`, nulos, filtros de qualidade, colunas derivadas e joins com as referências | `data/silver/bookings_enriched/` (particionado por `arrival_date_year` / `arrival_date_month_num`) |
-| Gold | [`scripts/silver_to_gold.py`](scripts/silver_to_gold.py) | 5 visões agregadas (`groupBy` + `agg`) para as perguntas de negócio | `data/gold/<visão>/` (Parquet) |
+| Gold | [`scripts/silver_to_gold.py`](scripts/silver_to_gold.py) | 6 visões agregadas (`groupBy` + `agg`) para as perguntas de negócio, mais um score de risco de cancelamento por reserva | `data/gold/<visão>/` (Parquet) |
 
 ```
 .
@@ -37,7 +37,9 @@ Mini-pipeline em **PySpark (API de DataFrames)** que processa o dataset público
 
 ### Requisitos
 
-- **Python 3.13** (testado com 3.13.9)
+- **Python 3.11 ou 3.12** (recomendado). O pipeline foi desenvolvido e testado
+  com o Python 3.13.9 e funcionou, mas o suporte oficial do PySpark 3.5 vai até
+  o Python 3.12. Para reproduzir sem surpresas, prefira 3.11 ou 3.12.
 - **PySpark 3.5.3**
 - **Java 17** (o Spark 3.5 roda em Java 8/11/17)
 
@@ -217,6 +219,8 @@ inclui `Canceled` e `No-Show`, e **efetiva** caso contrário.
 | `cancellation_by_lead_time` | `lead_time_bucket` × `deposit_type` × `is_repeated_guest` | `total_bookings`, `cancelled_bookings`, `cancellation_rate`, `avg_previous_cancellations`, `revenue_at_risk` | Que perfis de reserva têm risco alto de cancelamento (alvo de campanhas de retenção)? |
 | `top_countries_by_revenue` | `country` × `country_name` × `continent` (Top 20) | `effective_bookings`, `total_revenue`, `avg_ticket`, `avg_lead_time` | De que países vêm os hóspedes mais valiosos? (exclui `UNK`) |
 | `guest_profile_by_hotel` | hotel × `customer_type` | `effective_bookings`, `avg_total_nights`, `avg_total_guests`, `pct_long_stay`, `pct_family` | Qual a estadia média e o perfil dos hóspedes? |
+| `booking_cancellation_risk` | reserva | `risk_score`, `risk_level`, mais as dimensões do perfil e `is_canceled` | Quais reservas acionar numa campanha de retenção? |
+| `cancellation_risk_summary` | `risk_level` | `total_bookings`, `cancelled_bookings`, `cancellation_rate`, `pct_of_bookings`, `avg_risk_score`, `revenue_at_risk` | O score de risco separa bem quem cancela? |
 
 Os resultados de cada visão estão em
 [Respostas às perguntas de negócio](#respostas-às-perguntas-de-negócio).
@@ -225,13 +229,14 @@ Os resultados de cada visão estão em
 
 | Requisito | Status | Onde / como |
 |---|---|---|
-| Pelo menos uma visão Gold (idealmente 2 ou 3) | ✅ | 5 visões em [`silver_to_gold.py`](scripts/silver_to_gold.py) |
+| Pelo menos uma visão Gold (idealmente 2 ou 3) | ✅ | 7 visões em [`silver_to_gold.py`](scripts/silver_to_gold.py) |
 | Sugestão 1: receita e ocupação por hotel × mês | ✅ | `revenue_by_hotel_month`, com todas as métricas sugeridas |
 | Sugestão 2: cancelamentos por segmento | ✅ | `cancellation_by_segment`, com todas as métricas sugeridas |
 | Sugestão 3: Top 20 países por receita | ✅ | `top_countries_by_revenue`, ordenada por `total_revenue` desc com `limit(20)` |
 | Sugestão 4: estadia média e perfil de hóspedes | ✅ | `guest_profile_by_hotel`, com granularidade `(hotel, customer_type)` |
 | Visão proposta pelo candidato | ✅ extra | `cancellation_by_lead_time`, sobre risco de cancelamento para retenção |
-| DataFrame agregado (`groupBy` + `agg`) | ✅ | Todas as 5 visões |
+| Visões propostas pelo candidato: score de risco | ✅ extra | `booking_cancellation_risk` (score por reserva) e `cancellation_risk_summary` (validação) |
+| DataFrame agregado (`groupBy` + `agg`) | ✅ | As 6 visões agregadas; `booking_cancellation_risk` é a única por reserva e usa `groupBy` + `agg` para calcular as taxas dos perfis |
 | Salvo em `data/gold/` em Parquet ou CSV | ✅ | Parquet com Snappy, um arquivo por visão |
 | Nomes de colunas autoexplicativos | ✅ | `total_revenue`, `cancellation_rate`, `avg_lead_time` etc. |
 
@@ -353,10 +358,44 @@ cancelamentos.
 > fonte, e deve ser tratada como achado de qualidade de dados, não como regra
 > de negócio.
 
-**Limite:** a visão mostra *quais perfis* cancelam mais, mas não dá um score de
-risco para cada reserva. O próximo passo seria uma tabela Gold com score por
-reserva, calculado por regras ou por um modelo (por exemplo, regressão
-logística no Spark MLlib) treinado sobre a Silver.
+#### Score de risco por reserva
+
+Visões: `booking_cancellation_risk` (uma linha por reserva) e
+`cancellation_risk_summary` (validação do score).
+
+Cada reserva recebe um `risk_score`: a **taxa histórica de cancelamento do seu
+perfil**. O perfil combina `lead_time_bucket`, `market_segment`, `deposit_type`
+e `is_repeated_guest`. Perfis com menos de 30 reservas usam a taxa do perfil
+mais amplo (`lead_time_bucket` × `deposit_type`), para evitar taxas instáveis.
+O `risk_level` classifica o score: **High** (≥ 50%), **Medium** (30–50%) e
+**Low** (< 30%).
+
+| `risk_level` | Reservas | % do total | Cancelamento real | Receita perdida em cancelamentos |
+|---|---|---|---|---|
+| High | 22.300 | 18,7% | **83,9%** | €5,94 mi |
+| Medium | 44.738 | 37,5% | 38,7% | €7,98 mi |
+| Low | 52.171 | 43,8% | 15,7% | €2,81 mi |
+
+O score separa bem os grupos: uma reserva High cancela 5 vezes mais que uma Low.
+Para retenção, o foco natural é o grupo High e a parte do Medium com maior receita.
+
+| High, por tipo de depósito | Reservas | Cancelamento real |
+|---|---|---|
+| Non Refund | 14.587 | 99,4% ⚠️ |
+| No Deposit | 7.705 | 54,7% |
+| Refundable | 8 | 50,0% |
+
+> ⚠️ Dois terços do grupo High vêm da anomalia de `Non Refund` descrita acima.
+> Sem ela, o High teria ~7,7 mil reservas, com 55% de cancelamento. Em produção,
+> esse ponto teria de ser validado com a área de negócio antes de acionar
+> campanhas com base no score.
+
+**Limites:** o score é calculado e avaliado sobre os mesmos dados, então mede
+quanto o perfil explica o cancelamento, e não a capacidade de prever reservas
+novas. Em produção, as taxas por perfil seriam calculadas sobre o histórico e
+aplicadas às reservas futuras, ainda não chegadas. O próximo passo seria um
+modelo (por exemplo, regressão logística ou gradient boosting no Spark MLlib)
+com separação entre treino e teste, avaliado por AUC.
 
 ## Comentário arquitetural – produção na AWS / Databricks
 

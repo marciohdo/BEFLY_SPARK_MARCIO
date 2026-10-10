@@ -110,6 +110,59 @@ def guest_profile_by_hotel(silver: DataFrame) -> DataFrame:
     )
 
 
+RISK_PROFILE = ["lead_time_bucket", "market_segment", "deposit_type", "is_repeated_guest"]
+RISK_FALLBACK = ["lead_time_bucket", "deposit_type"]
+RISK_MIN_SUPPORT = 30  # perfis com menos reservas usam a taxa do perfil mais amplo
+
+
+def booking_cancellation_risk(silver: DataFrame) -> DataFrame:
+    """Score de risco por reserva: taxa histórica de cancelamento do perfil da reserva.
+
+    Em produção, as taxas por perfil seriam calculadas sobre o histórico e aplicadas
+    às reservas futuras (ainda não chegadas) para acionar campanhas de retenção.
+    """
+    profile_rates = silver.groupBy(RISK_PROFILE).agg(
+        F.count(F.lit(1)).alias("profile_bookings"),
+        F.avg("is_canceled").alias("profile_rate"),
+    )
+    fallback_rates = silver.groupBy(RISK_FALLBACK).agg(F.avg("is_canceled").alias("fallback_rate"))
+
+    risk_score = F.round(
+        F.when(F.col("profile_bookings") >= RISK_MIN_SUPPORT, F.col("profile_rate")).otherwise(F.col("fallback_rate")),
+        4,
+    )
+    return (
+        silver.join(F.broadcast(profile_rates), RISK_PROFILE)
+        .join(F.broadcast(fallback_rates), RISK_FALLBACK)
+        .withColumn("risk_score", risk_score)
+        .withColumn(
+            "risk_level",
+            F.when(F.col("risk_score") >= 0.5, "High").when(F.col("risk_score") >= 0.3, "Medium").otherwise("Low"),
+        )
+        .select(
+            "hotel", "arrival_date", "booking_date", "country", "customer_type", "distribution_channel",
+            *RISK_PROFILE, "adr", "total_nights", "is_canceled", "risk_score", "risk_level",
+        )
+    )
+
+
+def cancellation_risk_summary(risk: DataFrame) -> DataFrame:
+    """Validação do score: o cancelamento real deve crescer de Low para High."""
+    total = risk.count()
+    return (
+        risk.groupBy("risk_level")
+        .agg(
+            *cancellation_metrics(),
+            F.round(F.count(F.lit(1)) / F.lit(total), 4).alias("pct_of_bookings"),
+            F.round(F.avg("risk_score"), 4).alias("avg_risk_score"),
+            F.round(F.sum(F.when(is_canceled(), F.col("adr") * F.col("total_nights")).otherwise(0)), 2).alias(
+                "revenue_at_risk"
+            ),
+        )
+        .orderBy(F.desc("avg_risk_score"))
+    )
+
+
 def main() -> None:
     args = parse_args(__doc__)
     config = load_config(args.config)
@@ -118,18 +171,21 @@ def main() -> None:
     silver = spark.read.parquet(config["silver"]["bookings_enriched"]).cache()
     log.info("Silver bookings_enriched: %d linhas", silver.count())
 
+    risk = booking_cancellation_risk(silver).cache()
     views = {
         "revenue_by_hotel_month": revenue_by_hotel_month(silver),
         "cancellation_by_segment": cancellation_by_segment(silver),
         "cancellation_by_lead_time": cancellation_by_lead_time(silver),
         "top_countries_by_revenue": top_countries_by_revenue(silver),
         "guest_profile_by_hotel": guest_profile_by_hotel(silver),
+        "booking_cancellation_risk": risk,
+        "cancellation_risk_summary": cancellation_risk_summary(risk),
     }
 
     for name, df in views.items():
         # Volume pequeno: um único arquivo por visão facilita o consumo por BI.
         df.coalesce(1).write.mode("overwrite").option("compression", "snappy").parquet(config["gold"][name])
-        log.info("Gold %-26s | %4d linhas -> %s", name, df.count(), config["gold"][name])
+        log.info("Gold %-26s | %6d linhas -> %s", name, df.count(), config["gold"][name])
         df.show(5, truncate=False)
 
     spark.stop()

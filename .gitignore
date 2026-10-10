@@ -9,3 +9,6 @@ derby.log
 
 # Checksums internos do Spark gerados junto com os Parquet
 *.crc
+
+# Enunciado do teste: mantido só localmente, não publicado
+enunciado_teste_engenheiro_de_dados.md
