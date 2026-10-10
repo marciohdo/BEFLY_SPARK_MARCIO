@@ -111,6 +111,10 @@ Optei por **manter o dataset completo** (`hotel_bookings.csv`, ~119.390 reservas
 entre 2015 e 2017, dois hotéis), sem aplicar nenhum recorte. O volume é pequeno
 e roda confortavelmente em PySpark local, então não há ganho em reduzi-lo.
 
+O dataset tem apenas **2 hotéis** (`City Hotel` e `Resort Hotel`), por limitação
+da própria fonte pública. Veja a nota na
+[pergunta 1](#1-quanto-cada-hotel-está-faturando-mês-a-mês).
+
 ## Bronze – ingestão
 
 - **Schema explícito** (`StructType`) para os 3 arquivos, com `header=True`,
@@ -214,14 +218,8 @@ inclui `Canceled` e `No-Show`, e **efetiva** caso contrário.
 | `top_countries_by_revenue` | `country` × `country_name` × `continent` (Top 20) | `effective_bookings`, `total_revenue`, `avg_ticket`, `avg_lead_time` | De que países vêm os hóspedes mais valiosos? (exclui `UNK`) |
 | `guest_profile_by_hotel` | hotel × `customer_type` | `effective_bookings`, `avg_total_nights`, `avg_total_guests`, `pct_long_stay`, `pct_family` | Qual a estadia média e o perfil dos hóspedes? |
 
-Alguns achados da execução:
-
-- O cancelamento cresce com a antecedência: ~10% para reservas feitas até 7 dias
-  antes e ~68% para as feitas com mais de 1 ano.
-- `Groups` via `TA/TO` com cliente `Transient` (7.573 reservas) cancela ~98%,
-  com antecedência média de 225 dias.
-- Portugal lidera em receita, mas Reino Unido, França e Alemanha têm ticket
-  médio maior e reservam com bem mais antecedência.
+Os resultados de cada visão estão em
+[Respostas às perguntas de negócio](#respostas-às-perguntas-de-negócio).
 
 ### Checklist – requisitos do enunciado (seção 4.3)
 
@@ -236,6 +234,129 @@ Alguns achados da execução:
 | DataFrame agregado (`groupBy` + `agg`) | ✅ | Todas as 5 visões |
 | Salvo em `data/gold/` em Parquet ou CSV | ✅ | Parquet com Snappy, um arquivo por visão |
 | Nomes de colunas autoexplicativos | ✅ | `total_revenue`, `cancellation_rate`, `avg_lead_time` etc. |
+
+## Respostas às perguntas de negócio
+
+As quatro perguntas da seção 1 do enunciado são respondidas pelas visões Gold.
+Os números abaixo vêm da execução sobre o dataset completo (119.209 reservas na
+Silver). Valores em euros (€).
+
+### 1. Quanto cada hotel está faturando mês a mês?
+
+Visão: `revenue_by_hotel_month` (52 linhas, uma por hotel × mês).
+
+> **Só 2 hotéis.** Essa é uma limitação do dataset público, não um recorte
+> nosso. O enunciado (seção 2.1) diz que as reservas estão "distribuídas em dois
+> hotéis em Portugal", e o artigo original (Antonio, Almeida & Nunes, 2019)
+> anonimizou os hotéis como `City Hotel` e `Resort Hotel`. O
+> `hotel_metadata.csv` tem exatamente essas 2 linhas. O pipeline não depende
+> desse número: a visão agrupa por `hotel` e funcionaria igual com as mais de
+> 100 mil propriedades da Reservia.
+
+| Hotel | 2015 (jul–dez) | 2016 (ano todo) | 2017 (jan–ago) | Total |
+|---|---|---|---|---|
+| City Hotel (Lisboa) | €1,89 mi | €6,86 mi | €5,64 mi | **€14,39 mi** |
+| Resort Hotel (Algarve) | €2,62 mi | €4,81 mi | €4,17 mi | **€11,60 mi** |
+
+| Destaque | Hotel | Mês | Receita | Diária média (`avg_adr`) |
+|---|---|---|---|---|
+| Melhor mês | Resort Hotel | ago/2017 | €1,08 mi | €201,68 |
+| Pior mês | City Hotel | jul/2015 | €80 mil | €73,91 (67% de cancelamento) |
+| Pior mês do Resort | Resort Hotel | jan/2016 | €89 mil | €45,36 |
+
+| Hotel | Taxa média de cancelamento mensal |
+|---|---|
+| City Hotel | 41,5% |
+| Resort Hotel | 27,1% |
+
+O City fatura mais no total, mas cancela bem mais. O Resort tem sazonalidade
+forte, com pico no verão europeu e vale no inverno.
+
+### 2. Quais segmentos e canais cancelam mais? Com quanta antecedência reservam?
+
+Visão: `cancellation_by_segment`.
+
+| Segmento | Reservas | Cancelamento | Antecedência média |
+|---|---|---|---|
+| Groups | 19.790 | **61,1%** | 187 dias |
+| Online TA | 56.408 | 36,8% | 83 dias |
+| Offline TA/TO | 24.182 | 34,3% | 135 dias |
+| Aviation | 235 | 22,1% | 4 dias |
+| Corporate | 5.282 | 18,8% | 22 dias |
+| Direct | 12.582 | 15,4% | 50 dias |
+| Complementary | 728 | 12,2% | 14 dias |
+
+| Canal | Reservas | Cancelamento | Antecedência média |
+|---|---|---|---|
+| TA/TO | 97.750 | **41,1%** | 115 dias |
+| Corporate | 6.651 | 22,1% | 45 dias |
+| GDS | 193 | 19,2% | 21 dias |
+| Direct | 14.610 | 17,5% | 58 dias |
+
+Quem reserva com mais antecedência cancela mais. A combinação mais crítica é
+`Groups` via `TA/TO` com cliente `Transient` (7.573 reservas), que cancela ~98%
+com antecedência média de 225 dias.
+
+### 3. De que países vêm os hóspedes mais valiosos?
+
+Visão: `top_countries_by_revenue` (Top 20; abaixo os 10 primeiros).
+
+| # | País | Reservas efetivas | Receita | Ticket médio | Antecedência média |
+|---|---|---|---|---|---|
+| 1 | Portugal | 20.977 | €5,54 mi | €264 | 50 dias |
+| 2 | Reino Unido | 9.667 | €4,11 mi | €425 | 127 dias |
+| 3 | França | 8.468 | €3,10 mi | €366 | 78 dias |
+| 4 | Espanha | 6.383 | €2,25 mi | €352 | 44 dias |
+| 5 | Alemanha | 6.067 | €2,07 mi | €341 | 139 dias |
+| 6 | Irlanda | 2.542 | €1,24 mi | **€488** | 112 dias |
+| 7 | Itália | 2.428 | €0,87 mi | €357 | 80 dias |
+| 8 | Bélgica | 1.868 | €0,76 mi | €406 | 93 dias |
+| 9 | Holanda | 1.716 | €0,63 mi | €368 | 75 dias |
+| 10 | Suíça | 1.298 | €0,55 mi | €422 | 84 dias |
+
+Portugal lidera pelo volume, mas tem o menor ticket médio do Top 10. Por
+reserva, os hóspedes mais valiosos vêm da Irlanda (€488), do Reino Unido (€425)
+e da Suíça (€422).
+
+### 4. Como detectar reservas com risco alto de cancelamento?
+
+Visão: `cancellation_by_lead_time`.
+
+| Antecedência | Reservas | Cancelamento | Receita perdida em cancelamentos |
+|---|---|---|---|
+| 0–7 dias | 19.635 | 9,6% | €0,45 mi |
+| 8–30 dias | 18.945 | 27,9% | €2,05 mi |
+| 31–90 dias | 29.529 | 37,7% | €4,33 mi |
+| 91–180 dias | 26.420 | 44,7% | €5,13 mi |
+| 181–365 dias | 21.533 | 55,5% | €4,42 mi |
+| > 365 dias | 3.147 | **67,7%** | €0,36 mi |
+
+| Tipo de hóspede | Reservas | Cancelamento |
+|---|---|---|
+| Novo | 115.455 | 37,8% |
+| Recorrente | 3.754 | 14,7% |
+
+| Tipo de depósito | Reservas | Cancelamento |
+|---|---|---|
+| No Deposit | 104.460 | 28,4% |
+| Non Refund | 14.587 | 99,4% ⚠️ |
+| Refundable | 162 | 22,2% |
+
+**Perfil de risco alto para campanhas de retenção:** hóspede novo, sem depósito
+(`No Deposit`), antecedência acima de 30 dias e segmento `Groups` ou `TA/TO`.
+As faixas de 31 a 365 dias concentram **€13,9 mi** em receita perdida com
+cancelamentos.
+
+> ⚠️ **Qualidade de dados:** a taxa de 99,4% em `Non Refund` contraria a
+> intuição (depósito não reembolsável deveria reduzir cancelamentos). É uma
+> anomalia conhecida desse dataset, provavelmente um problema de registro na
+> fonte, e deve ser tratada como achado de qualidade de dados, não como regra
+> de negócio.
+
+**Limite:** a visão mostra *quais perfis* cancelam mais, mas não dá um score de
+risco para cada reserva. O próximo passo seria uma tabela Gold com score por
+reserva, calculado por regras ou por um modelo (por exemplo, regressão
+logística no Spark MLlib) treinado sobre a Silver.
 
 ## Comentário arquitetural – produção na AWS / Databricks
 
