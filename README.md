@@ -95,6 +95,8 @@ spark-submit scripts/silver_to_gold.py
 # opcional: spark-submit scripts/<etapa>.py --config /caminho/outro_config.yaml
 ```
 
+As saídas de cada camada (`data/bronze/`, `data/silver/` e `data/gold/`) estão
+versionadas no repositório, para consulta sem precisar rodar o pipeline.
 Cada etapa grava com `mode("overwrite")`, então o pipeline é idempotente e
 pode ser reexecutado do zero. A execução completa leva cerca de 1–2 minutos
 num laptop, a maior parte em subir a JVM três vezes.

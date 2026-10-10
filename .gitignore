@@ -7,7 +7,5 @@ spark-warehouse/
 metastore_db/
 derby.log
 
-# Saídas do pipeline (regeneradas por scripts/run_pipeline.sh)
-data/bronze/
-data/silver/
-data/gold/
+# Checksums internos do Spark gerados junto com os Parquet
+*.crc
