@@ -1,0 +1,26 @@
+# Configuração do pipeline. Caminhos relativos são resolvidos a partir da raiz do projeto.
+
+spark:
+  app_name: befly-hotel-bookings
+  master: "local[*]"
+  shuffle_partitions: 8
+
+raw:
+  bookings: data/raw/hotel_bookings.csv
+  countries: data/raw/country_metadata.csv
+  hotels: data/raw/hotel_metadata.csv
+
+bronze:
+  bookings: data/bronze/bookings
+  countries: data/bronze/countries
+  hotels: data/bronze/hotels
+
+silver:
+  bookings_enriched: data/silver/bookings_enriched
+
+gold:
+  revenue_by_hotel_month: data/gold/revenue_by_hotel_month
+  cancellation_by_segment: data/gold/cancellation_by_segment
+  cancellation_by_lead_time: data/gold/cancellation_by_lead_time
+  top_countries_by_revenue: data/gold/top_countries_by_revenue
+  guest_profile_by_hotel: data/gold/guest_profile_by_hotel
