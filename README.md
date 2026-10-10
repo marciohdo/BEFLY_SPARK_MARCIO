@@ -269,6 +269,7 @@ Power BI/QuickSight, e as marcas do grupo consumiriam os dados por
 
 | Requisito | Status | Onde / como |
 |---|---|---|
+| Tarefas em PySpark com a **API de DataFrames** (sem SQL direto), em scripts `.py` | ✅ | As 3 etapas usam só a API de DataFrames (`read`, `withColumn`, `filter`, `join`, `groupBy().agg()`), sem `spark.sql()` nem views temporárias. Optamos por scripts `.py` executados via `spark-submit` e não criamos notebook. |
 | Scripts PySpark com leitura Bronze, transformações Silver e agregações Gold | ✅ | [`raw_to_bronze.py`](scripts/raw_to_bronze.py), [`bronze_to_silver.py`](scripts/bronze_to_silver.py), [`silver_to_gold.py`](scripts/silver_to_gold.py) |
 | Código organizado e legível | ✅ | Uma função por transformação, config externa e módulo comum em [`utils/`](utils/) |
 | Estrutura de pastas sugerida | ✅ | `scripts/`, `utils/` (com `config.yaml`), `data/{raw,bronze,silver,gold}/`; o notebook opcional não foi incluído |
