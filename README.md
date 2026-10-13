@@ -54,6 +54,26 @@ pip install -r requirements.txt
 O `env.sh` ativa a `.venv` e, se existir um JDK em `.tools/jdk17/`, aponta o
 `JAVA_HOME` para ele. Sem esse diretório, ele usa o Java instalado no sistema.
 
+> **Rode `source env.sh` antes de qualquer comando Spark** (`spark-submit`,
+> `python` com PySpark). Se a máquina não tiver Java instalado no sistema (caso
+> comum no macOS), o Spark falha ao iniciar com `Unable to locate a Java Runtime`
+> / `JAVA_GATEWAY_EXITED`. O `env.sh` resolve isso apontando para o JDK 17 em
+> `.tools/jdk17/` (diretório fora do Git, listado no `.gitignore`).
+
+Para quem clonar o repositório (sem `.tools/`), instale o Java 17 no sistema:
+
+```bash
+# macOS (Homebrew)
+brew install openjdk@17
+export JAVA_HOME="$(brew --prefix openjdk@17)/libexec/openjdk.jdk/Contents/Home"
+export PATH="$JAVA_HOME/bin:$PATH"
+
+# Linux (Debian/Ubuntu)
+sudo apt-get install -y openjdk-17-jdk
+
+java -version   # deve mostrar a versão 17
+```
+
 ### Obtenção dos dados
 
 Para iniciar a ingestão, criamos o script
@@ -154,6 +174,9 @@ da própria fonte pública. Veja a nota na
 2. **`arrival_date`:** o mês por extenso é mapeado para 1–12
    (`arrival_date_month_num`, via `create_map`), e a data é montada com
    `concat_ws` + `lpad` + `to_date`. Se alguma data ficar nula, a etapa falha.
+   Validado na saída Silver: coluna do tipo `date`, 0 nulos em 119.209 linhas,
+   ano/mês/dia/nome do mês extraídos de `arrival_date` batem com as colunas de
+   origem em todas as linhas, e o intervalo vai de `2015-07-01` a `2017-08-31`.
 3. **Nulos:** `children` passa de nulo para `0` (4 registros) e `country` passa
    de nulo para `"UNK"` (488 registros). Após o join, `country_name` e
    `continent` dessas reservas recebem `"Unknown"`.
