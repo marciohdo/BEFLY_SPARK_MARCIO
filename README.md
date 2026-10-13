@@ -2,14 +2,18 @@
 
 ## Visão geral
 
-Mini-pipeline em **PySpark (API de DataFrames)** que processa o dataset público
-*Hotel Booking Demand* seguindo a arquitetura **Medalhão**:
+Montei um pipeline em PySpark que pega as reservas de hotel do dataset público
+*Hotel Booking Demand* e as transforma, em três etapas, em tabelas prontas para
+responder às perguntas de negócio:
 
-| Camada | Script | O que faz | Saída |
-|---|---|---|---|
-| Bronze | [`scripts/raw_to_bronze.py`](scripts/raw_to_bronze.py) | Lê os 3 CSVs com **schema explícito**, trata `"NULL"` como nulo e grava Parquet/Snappy com colunas de linhagem | `data/bronze/{bookings,countries,hotels}/` (`bookings` particionado por `arrival_date_year`) |
-| Silver | [`scripts/bronze_to_silver.py`](scripts/bronze_to_silver.py) | Tipagem, `arrival_date`, nulos, filtros de qualidade, colunas derivadas e joins com as referências | `data/silver/bookings_enriched/` (particionado por `arrival_date_year` / `arrival_date_month_num`) |
-| Gold | [`scripts/silver_to_gold.py`](scripts/silver_to_gold.py) | 6 visões agregadas (`groupBy` + `agg`) para as perguntas de negócio, mais um score de risco de cancelamento por reserva | `data/gold/<visão>/` (Parquet) |
+1. **Bronze** ([`raw_to_bronze.py`](scripts/raw_to_bronze.py)): leio os CSVs
+   como vieram e salvo em Parquet.
+2. **Silver** ([`bronze_to_silver.py`](scripts/bronze_to_silver.py)): limpo os
+   dados, corrijo os tipos, crio colunas úteis (como data de chegada e receita) e
+   junto com as informações de países e hotéis.
+3. **Gold** ([`silver_to_gold.py`](scripts/silver_to_gold.py)): gero as visões
+   de faturamento, cancelamentos e países, além de um score de risco de
+   cancelamento por reserva.
 
 ```
 .
